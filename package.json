@@ -1,0 +1,34 @@
+{
+  "name": "harbor-fnol-demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "voice": "tsx src/voice/server.ts",
+    "voice:dev": "tsx watch src/voice/server.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "lucide-react": "^0.468.0",
+    "next": "^16.3.1",
+    "openai": "^7.5.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "twilio-agent-connect": "^2.0.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
