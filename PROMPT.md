@@ -46,7 +46,7 @@ Keep the visual design restrained and professional. Do not build onboarding, bil
 
 ## Configuration and handoff
 
-Provide `.env.example` and a concise README covering OpenAI, Twilio Agent Connect, one-file local configuration, ngrok, Box CCG app authorization/scopes, and a single Vercel Services deployment. Derive the voice hostname from Vercel's production URL when `TWILIO_VOICE_PUBLIC_DOMAIN` is unset. `TWILIO_CONVERSATION_CONFIGURATION_ID` may be optional for voice-only mode.
+Provide `.env.example` and a concise README covering OpenAI, Twilio Agent Connect, one-file local configuration, ngrok, Box CCG app authorization/scopes, and a single Vercel Services deployment. Derive the voice hostname from Vercel's production URL when `TWILIO_VOICE_PUBLIC_DOMAIN` is unset.
 
 Required verification:
 

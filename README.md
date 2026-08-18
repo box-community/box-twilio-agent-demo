@@ -105,20 +105,6 @@ TWILIO_PHONE_NUMBER=+15555550100
 
 Use E.164 format for `TWILIO_PHONE_NUMBER`, including the leading `+` and country code.
 
-### Optional Conversation Orchestrator memory
-
-Conversation Orchestrator adds Twilio Conversation Memory and cross-call context:
-
-1. Go to **Products & services → Conversation Orchestrator → Conversation configurations**.
-2. Create a configuration for the phone number and select or create a Conversation Memory store.
-3. Copy the ID, which starts with `conv_configuration_`.
-
-```env
-TWILIO_CONVERSATION_CONFIGURATION_ID=conv_configuration_xxxxxxxxxxxxxxxxxxxxxxxxxx
-```
-
-Leave this variable empty for the simplest voice-only demo.
-
 ## 5. Run locally
 
 ### Dashboard only
@@ -260,7 +246,6 @@ Box remains the claim system of record. The app has no database and the dashboar
 | `/voice/twiml` | `POST` | Voice | Returns TwiML that connects a call to Conversation Relay. |
 | `/voice/ws` | WebSocket | Voice | Carries caller prompts and agent responses. |
 | `/voice/conversation-relay-callback` | `POST` | Voice | Receives Conversation Relay completion events. |
-| `/voice/webhook` | `POST` | Voice | Receives Agent Connect conversation events. |
 | `/voice/health` | `GET` | Voice | Reports voice-service health. |
 
 ## Scripts
@@ -344,6 +329,5 @@ Claim extraction and Box upload happen after call completion. Check the `voice` 
 - [Vercel container images](https://vercel.com/blog/dockerfile-on-vercel)
 - [Twilio Agent Connect quickstart](https://www.twilio.com/docs/conversations/agent-connect/quickstart)
 - [Twilio Agent Connect channels and routes](https://www.twilio.com/docs/conversations/agent-connect/channels)
-- [Twilio Conversation Orchestrator quickstart](https://www.twilio.com/docs/conversations/orchestrator/quickstart)
 - [Box Client Credentials Grant setup](https://developer.box.com/guides/authentication/client-credentials/client-credentials-setup)
 - [OpenAI structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs)

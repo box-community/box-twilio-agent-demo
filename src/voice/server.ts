@@ -1,13 +1,11 @@
 import { config as loadEnv } from "dotenv";
 import {
-  MemoryPromptBuilder,
   TAC,
   TACConfig,
   TACServer,
   VoiceChannel,
   type ConversationId,
   type ConversationSession,
-  type TACMemoryResponse,
 } from "twilio-agent-connect";
 import { saveClaimToBox } from "../../lib/box";
 import { analyzeClaim, respondToCaller } from "../../lib/openai";
@@ -23,12 +21,29 @@ process.env.TWILIO_VOICE_PUBLIC_DOMAIN ||= process.env.VERCEL_PROJECT_PRODUCTION
 process.env.TWILIO_VOICE_WEBSOCKET_PATH ||= `${voiceBasePath}/ws`;
 process.env.TWILIO_VOICE_ACTION_PATH ||= `${voiceBasePath}/conversation-relay-callback`;
 
+function requiredEnv(name: string) {
+  const value = process.env[name]?.trim();
+  if (!value) throw new Error(`${name} is required by the voice service`);
+  return value;
+}
+
 const greeting =
   "Thank you for calling Harbor Home claims. I’m Harbor, the automated intake assistant. Before we begin, is everyone safe?";
 
 const transcripts = new Map<string, TranscriptTurn[]>();
 
-const tac = await TAC.create({ config: TACConfig.fromEnv() });
+const tac = await TAC.create({
+  config: new TACConfig({
+    accountSid: requiredEnv("TWILIO_ACCOUNT_SID"),
+    authToken: requiredEnv("TWILIO_AUTH_TOKEN"),
+    apiKey: requiredEnv("TWILIO_API_KEY"),
+    apiSecret: requiredEnv("TWILIO_API_SECRET"),
+    phoneNumber: requiredEnv("TWILIO_PHONE_NUMBER"),
+    voicePublicDomain: process.env.TWILIO_VOICE_PUBLIC_DOMAIN,
+    voiceWebsocketPath: process.env.TWILIO_VOICE_WEBSOCKET_PATH,
+    voiceActionPath: process.env.TWILIO_VOICE_ACTION_PATH,
+  }),
+});
 const voiceChannel = new VoiceChannel(tac, {
   memoryMode: "once",
   defaultTwimlOptions: {
@@ -46,14 +61,10 @@ tac.onMessageReady(
   async ({
     conversationId,
     message,
-    memory,
-    session,
     abortSignal,
   }: {
     conversationId: ConversationId;
     message: string;
-    memory: TACMemoryResponse | undefined;
-    session: ConversationSession;
     abortSignal?: AbortSignal;
   }) => {
     const id = conversationId as string;
@@ -62,8 +73,7 @@ tac.onMessageReady(
     transcripts.set(id, transcript);
 
     try {
-      const memoryContext = MemoryPromptBuilder.build(memory, session);
-      const answer = await respondToCaller(transcript, memoryContext, abortSignal);
+      const answer = await respondToCaller(transcript, "", abortSignal);
       transcript.push({ role: "agent", text: answer });
       return answer;
     } catch (error) {
@@ -99,7 +109,6 @@ const server = new TACServer(tac, {
   host: process.env.HOST || "0.0.0.0",
   port: Number(process.env.PORT || 8080),
   webhookPaths: {
-    conversation: `${voiceBasePath}/webhook`,
     twiml: `${voiceBasePath}/twiml`,
   },
 });
