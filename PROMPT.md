@@ -4,8 +4,10 @@ Build a polished but intentionally small TypeScript demo in which a homeowner ca
 
 ## Architecture
 
-- Next.js App Router dashboard and API routes, deployable to Vercel.
-- A separate Node/Fastify voice process using the current `twilio-agent-connect` TypeScript package. Require Node 22.13+ and expose Agent Connect's `/twiml`, `/ws`, and completion-callback routes.
+- One Vercel Services project and one public domain, requiring Node 22.13+.
+- A Next.js App Router `web` service for the dashboard and API routes.
+- A containerized Node/Fastify `voice` service using the current `twilio-agent-connect` TypeScript package. Route all voice traffic under `/voice/*`, including `/voice/twiml`, `/voice/ws`, the completion callback, conversation webhook, and health check.
+- Configure the services and same-domain rewrites in `vercel.json`; provide a minimal `Dockerfile.vercel` for the voice process. Use `vercel dev -L` to run both locally.
 - OpenAI Responses API for the spoken agent and structured claim extraction.
 - Box REST APIs with Client Credentials Grant authentication using `BOX_CLIENT_ID`, `BOX_CLIENT_SECRET`, and `BOX_ENTERPRISE_ID`. Cache short-lived access tokens server-side and refresh them automatically.
 - Box is the source of truth; do not add a database or user authentication.
@@ -44,11 +46,12 @@ Keep the visual design restrained and professional. Do not build onboarding, bil
 
 ## Configuration and handoff
 
-Provide `.env.example` and a concise README covering OpenAI, Twilio Agent Connect, ngrok/local voice setup, Box CCG app authorization/scopes, and Vercel dashboard deployment. `TWILIO_CONVERSATION_CONFIGURATION_ID` may be optional for voice-only mode.
+Provide `.env.example` and a concise README covering OpenAI, Twilio Agent Connect, one-file local configuration, ngrok, Box CCG app authorization/scopes, and a single Vercel Services deployment. Derive the voice hostname from Vercel's production URL when `TWILIO_VOICE_PUBLIC_DOMAIN` is unset. `TWILIO_CONVERSATION_CONFIGURATION_ID` may be optional for voice-only mode.
 
 Required verification:
 
 - TypeScript check passes.
 - Production Next.js build passes.
-- Agent Connect server starts and registers its routes with placeholder credentials.
+- Agent Connect starts and registers the namespaced voice routes with placeholder credentials.
+- The voice container builds when Docker is available.
 - Box CCG token exchange is tested with a mocked response; never expose secrets to client code or logs.

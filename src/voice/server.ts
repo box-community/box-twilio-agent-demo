@@ -1,4 +1,4 @@
-import "dotenv/config";
+import { config as loadEnv } from "dotenv";
 import {
   MemoryPromptBuilder,
   TAC,
@@ -12,6 +12,16 @@ import {
 import { saveClaimToBox } from "../../lib/box";
 import { analyzeClaim, respondToCaller } from "../../lib/openai";
 import type { TranscriptTurn } from "../../lib/types";
+
+loadEnv({ path: [".env.local", ".env"], quiet: true });
+
+const voiceBasePath = "/voice";
+
+// Vercel provides the deployment hostname. An explicit value still wins, which
+// is useful for a custom domain and for an ngrok tunnel during local testing.
+process.env.TWILIO_VOICE_PUBLIC_DOMAIN ||= process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL;
+process.env.TWILIO_VOICE_WEBSOCKET_PATH ||= `${voiceBasePath}/ws`;
+process.env.TWILIO_VOICE_ACTION_PATH ||= `${voiceBasePath}/conversation-relay-callback`;
 
 const greeting =
   "Thank you for calling Harbor Home claims. I’m Harbor, the automated intake assistant. Before we begin, is everyone safe?";
@@ -88,8 +98,12 @@ tac.onConversationEnded(async ({ session }: { session: ConversationSession }) =>
 const server = new TACServer(tac, {
   host: process.env.HOST || "0.0.0.0",
   port: Number(process.env.PORT || 8080),
+  webhookPaths: {
+    conversation: `${voiceBasePath}/webhook`,
+    twiml: `${voiceBasePath}/twiml`,
+  },
 });
 
-server.fastify.get("/health", async () => ({ status: "ok", service: "harbor-voice" }));
+server.fastify.get(`${voiceBasePath}/health`, async () => ({ status: "ok", service: "harbor-voice" }));
 
 await server.start();

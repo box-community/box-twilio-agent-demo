@@ -1,4 +1,26 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": "nextjs"
+  "services": {
+    "web": {
+      "root": ".",
+      "framework": "nextjs",
+      "devCommand": "npm run dev"
+    },
+    "voice": {
+      "root": ".",
+      "entrypoint": "Dockerfile.vercel",
+      "runtime": "container",
+      "devCommand": "npm run voice:dev"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/voice/(.*)",
+      "destination": { "service": "voice" }
+    },
+    {
+      "source": "/(.*)",
+      "destination": { "service": "web" }
+    }
+  ]
 }
