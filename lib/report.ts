@@ -62,3 +62,46 @@ ${bullets(claim.notes)}
 ${transcript || "No transcript was retained."}
 `;
 }
+
+export function claimIntakeToMarkdown(claim: Claim): string {
+  const transcript = claim.transcript
+    .map((turn) => `**${turn.role === "caller" ? "Caller" : "Harbor"}:** ${turn.text}`)
+    .join("\n\n");
+
+  return `# First Notice of Loss — ${claim.claimNumber}
+
+> AI-assisted intake for human review. Policy analysis is pending in Box.
+
+## Claim overview
+
+| Field | Value |
+| --- | --- |
+| Claimant | ${claim.claimantName} |
+| Phone | ${claim.phone} |
+| Property | ${claim.propertyAddress} |
+| Date of loss | ${claim.lossDate} |
+| Loss type | ${claim.lossType} |
+| Severity | ${claim.severity} |
+| Filed | ${claim.filedAt} |
+
+## What happened
+
+${claim.summary}
+
+### Affected areas
+
+${bullets(claim.damageAreas)}
+
+### Immediate risks
+
+${bullets(claim.immediateRisks)}
+
+## Intake notes
+
+${bullets(claim.notes)}
+
+## Call transcript
+
+${transcript || "No transcript was retained."}
+`;
+}

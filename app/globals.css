@@ -160,7 +160,7 @@ button { color: inherit; }
 .call-flow > svg { margin-left: auto; color: #79847e; }
 
 .workspace {
-  height: calc(100vh - 202px);
+  height: 100%;
   min-height: 590px;
   display: grid;
   grid-template-columns: minmax(270px, 330px) 1fr;

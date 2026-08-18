@@ -13,6 +13,7 @@
     "start": "next start",
     "voice": "tsx src/voice/server.ts",
     "voice:dev": "tsx watch src/voice/server.ts",
+    "test": "tsx --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
     "deploy": "vercel",
     "deploy:production": "vercel --prod"

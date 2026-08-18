@@ -7,11 +7,13 @@ import {
   type ConversationId,
   type ConversationSession,
 } from "twilio-agent-connect";
-import { saveClaimToBox } from "../../lib/box";
-import { analyzeClaim, respondToCaller } from "../../lib/openai";
+import { ensurePolicyInBox, saveClaimToBox } from "../../lib/box";
+import { extractClaim, respondToCaller } from "../../lib/openai";
 import type { TranscriptTurn } from "../../lib/types";
 
 loadEnv({ path: [".env.local", ".env"], quiet: true });
+
+await ensurePolicyInBox();
 
 const voiceBasePath = "/voice";
 
@@ -97,7 +99,7 @@ tac.onConversationEnded(async ({ session }: { session: ConversationSession }) =>
   }
 
   try {
-    const claim = await analyzeClaim(transcript, { phone: session.authorInfo?.address });
+    const claim = await extractClaim(transcript, { phone: session.authorInfo?.address });
     const saved = await saveClaimToBox(claim);
     console.info(`Created ${saved.claimNumber}${saved.boxFileId ? ` in Box file ${saved.boxFileId}` : ""}.`);
   } catch (error) {

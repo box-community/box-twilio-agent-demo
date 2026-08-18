@@ -34,15 +34,27 @@ export const claimSchema = z.object({
 export type TranscriptTurn = z.infer<typeof transcriptTurnSchema>;
 export type Claim = z.infer<typeof claimSchema>;
 
-export const claimExtractionSchema = claimSchema.omit({
-  id: true,
-  claimNumber: true,
-  filedAt: true,
-  status: true,
-  taskStatus: true,
-  boxFileId: true,
-  boxUrl: true,
-  transcript: true,
+export const claimIntakeSchema = claimSchema.pick({
+  claimantName: true,
+  phone: true,
+  propertyAddress: true,
+  lossDate: true,
+  lossType: true,
+  summary: true,
+  damageAreas: true,
+  immediateRisks: true,
+  severity: true,
+  notes: true,
 });
 
-export type ClaimExtraction = z.infer<typeof claimExtractionSchema>;
+export const claimAnalysisSchema = claimSchema.pick({
+  coverageStatus: true,
+  coverageRationale: true,
+  policyReferences: true,
+  deductible: true,
+  nextSteps: true,
+  notes: true,
+});
+
+export type ClaimIntake = z.infer<typeof claimIntakeSchema>;
+export type ClaimAnalysis = z.infer<typeof claimAnalysisSchema>;

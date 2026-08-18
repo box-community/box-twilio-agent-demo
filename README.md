@@ -2,7 +2,7 @@
 
 A small Next.js and Twilio voice application that turns a homeowner's first-notice-of-loss (FNOL) call into a reviewable claim record in Box.
 
-The caller speaks with an OpenAI-powered intake agent over a Twilio phone number. When the call ends, the app extracts structured claim data, compares the reported loss with a sample homeowners policy, uploads a Markdown report to Box, attaches metadata, and creates a human review task. The dashboard reads claims back from Box; there is no application database.
+The caller speaks with an OpenAI-powered intake agent over a Twilio phone number. When the call ends, OpenAI extracts the reported facts, the app stores the claim in Box, and Box AI compares it with a sample homeowners policy. The completed Markdown report, structured metadata, and review task all live in Box. The dashboard reads claims back from Box; there is no application database.
 
 The complete application deploys as one Vercel project and one domain:
 
@@ -21,6 +21,7 @@ The complete application deploys as one Vercel project and one domain:
 - [OpenAI API account](https://platform.openai.com/)
 - [Twilio account](https://www.twilio.com/try-twilio) with a voice-capable phone number
 - [Box developer account](https://account.box.com/signup/developer) with permission to create a Platform App
+- A Box Business plan or higher with Box AI enabled for the enterprise
 - A Box Admin or Co-Admin who can authorize the Platform App
 - [ngrok](https://ngrok.com/download) or another public HTTPS/WebSocket tunnel for local voice testing
 
@@ -44,7 +45,7 @@ OPENAI_API_KEY=sk-proj-...
 OPENAI_MODEL=gpt-5.6
 ```
 
-`OPENAI_MODEL` is optional and defaults to `gpt-5.6`. The key is used for live voice responses and for structured FNOL/policy analysis when a call ends.
+`OPENAI_MODEL` is optional and defaults to `gpt-5.6`. The key is used for live voice responses and factual structured FNOL extraction when a call ends. Coverage analysis is performed by Box AI.
 
 ## 3. Configure Box CCG
 
@@ -53,11 +54,13 @@ OPENAI_MODEL=gpt-5.6
 1. Open the [Box Developer Console](https://app.box.com/developers/console).
 2. Select **Platform Apps**, then **New App**.
 3. Choose **Client Credentials Grant**. The authentication method cannot be changed later.
-4. Enable **Read and write all files and folders stored in Box** under Application Scopes.
+4. Enable these Application Scopes:
+   - **Read and write all files and folders stored in Box**
+   - **Manage AI**
 5. Choose the application access level:
    - **App Access Only** is sufficient when reports live in the Service Account's folders and tasks remain unassigned.
    - **App + Enterprise Access** is needed to use an existing enterprise folder or assign tasks to managed users.
-6. Submit the app for authorization. A Box Admin or Co-Admin must authorize it before CCG tokens work.
+6. Ask the Box Admin to enable Box AI API access for the enterprise, then submit the app for authorization. A Box Admin or Co-Admin must authorize it before CCG tokens work.
 7. Copy the Client ID, Client Secret, and Enterprise ID from the app configuration.
 
 All Box API calls are server-side, so a Box CORS-domain entry is not required.
@@ -82,7 +85,9 @@ BOX_REVIEWER_USER_ID=
 
 The server exchanges the CCG values for a short-lived Service Account token and refreshes it automatically. If `BOX_FOLDER_ID` points outside the Service Account, add the Service Account as a collaborator. A configured reviewer must also be able to access that folder.
 
-The demo uses Box's built-in `global/properties` metadata template, so no custom metadata template is required.
+Changing an app scope requires the Admin to reauthorize the app. If this app was already authorized before **Manage AI** was selected, reauthorize it before testing.
+
+At server startup, the app uploads [data/homeowners-policy.md](./data/homeowners-policy.md) to the configured folder if it is missing. When the local policy changes, the app creates a new Box file version. The demo uses Box's built-in `global/properties` metadata template, so no custom metadata template is required.
 
 ## 4. Configure Twilio Agent Connect
 
@@ -201,14 +206,14 @@ Every Git deployment builds the dashboard and voice service together, produces o
 2. Start the dashboard.
 3. Click **Run demo call**.
 
-The app analyzes the bundled transcript, uploads the report to Box, attaches metadata, creates a review task, and opens the new claim in the dashboard.
+OpenAI extracts the bundled transcript, the app uploads an intake report and metadata to Box, Box AI compares that report with the policy, and the app writes the analysis back as a new report version and updated metadata. It then creates a review task and opens the claim in the dashboard.
 
 ### Test the complete phone flow
 
 1. Start the full local stack or deploy it to Vercel.
 2. Call the configured Twilio number.
 3. Answer the intake questions and hang up when complete.
-4. Wait a few seconds for OpenAI analysis and Box upload.
+4. Wait a few seconds for OpenAI extraction, Box upload, and Box AI analysis.
 5. Refresh the dashboard and open the new claim.
 
 The sample policy is [data/homeowners-policy.md](./data/homeowners-policy.md).
@@ -222,14 +227,15 @@ One Vercel project and domain
                        ↑
 Homeowner → Twilio → /voice/twiml ↔ /voice/ws
                                       ↓
-                               OpenAI interview
+                       OpenAI interview + fact extraction
                                       ↓ call ends
-                        structured FNOL + policy triage
+                           initial FNOL in Box
                                       ↓
-                              Box CCG Service Account
-                               ├── Markdown report
-                               ├── metadata
-                               └── review task
+                      Box AI asks across two files
+                       ├── FNOL Markdown report
+                       └── homeowners-policy.md
+                                      ↓
+                    final report version + metadata + task
                                       ↓
                            Next.js reads claims from Box
 ```
@@ -269,6 +275,7 @@ twilio-box-agent/
 ├── components/                  # Claims-desk interface
 ├── data/homeowners-policy.md    # Sample policy
 ├── lib/                         # Box, OpenAI, reports, schemas, demo data
+├── instrumentation.ts          # Next.js startup policy synchronization
 ├── src/voice/server.ts          # Agent Connect Fastify server
 ├── Dockerfile.vercel            # Vercel voice container
 ├── vercel.json                  # Services and same-domain routing
@@ -303,6 +310,10 @@ Verify that the client ID and secret belong to the same app and that `BOX_ENTERP
 
 Confirm the app scope, the numeric `BOX_FOLDER_ID`, and that the CCG Service Account owns or collaborates on the destination folder.
 
+### The report says Box AI analysis was unavailable
+
+Confirm the enterprise has Box AI and Box AI API access enabled, the app has the **Manage AI** scope, and the Admin reauthorized the app after that scope was added. The claim is still retained in Box and deliberately falls back to **Needs review**.
+
 ### The Twilio call disconnects immediately
 
 - Verify `/voice/health` on the same hostname used by Twilio.
@@ -331,4 +342,6 @@ Claim extraction and Box upload happen after call completion. Check the `voice` 
 - [Twilio Agent Connect quickstart](https://www.twilio.com/docs/conversations/agent-connect/quickstart)
 - [Twilio Agent Connect channels and routes](https://www.twilio.com/docs/conversations/agent-connect/channels)
 - [Box Client Credentials Grant setup](https://developer.box.com/guides/authentication/client-credentials/client-credentials-setup)
+- [Box AI prerequisites](https://developer.box.com/guides/box-ai/ai-tutorials/prerequisites)
+- [Box AI ask API](https://developer.box.com/reference/post-ai-ask)
 - [OpenAI structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs)

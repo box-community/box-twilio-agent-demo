@@ -1,27 +1,18 @@
 import OpenAI from "openai";
 import { zodTextFormat } from "openai/helpers/zod";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { claimExtractionSchema, type Claim, type TranscriptTurn } from "@/lib/types";
-
-const policyText = readFileSync(join(process.cwd(), "data/homeowners-policy.md"), "utf8");
+import { claimIntakeSchema, type Claim, type TranscriptTurn } from "@/lib/types";
 
 const CLAIM_PROMPT = `You are an experienced property-insurance intake analyst.
-Extract the first notice of loss and compare it with the provided demo policy.
+Extract the factual first notice of loss from the call transcript.
 
 Rules:
 - Be factual and conservative. Never invent a fact that the caller did not provide.
-- This is preliminary triage, not a binding coverage decision.
-- Use "Needs review" when the transcript lacks facts needed for a reliable assessment.
-- Put safety or damage-mitigation actions first in nextSteps.
+- Do not analyze coverage or infer policy terms. Box AI performs policy analysis later.
 - Keep notes short and useful to a human adjuster.
 - Normalize the loss date as YYYY-MM-DD when possible; otherwise use "Not provided".
-- Phone and address may be "Not provided".
+- Phone, address, and claimant name may be "Not provided".`;
 
-DEMO POLICY:
-${policyText}`;
-
-export async function analyzeClaim(
+export async function extractClaim(
   transcript: TranscriptTurn[],
   defaults: Partial<Pick<Claim, "phone" | "claimantName">> = {},
 ): Promise<Omit<Claim, "boxFileId" | "boxUrl">> {
@@ -43,7 +34,7 @@ export async function analyzeClaim(
         content: `Known caller details: ${JSON.stringify(defaults)}\n\nCALL TRANSCRIPT:\n${renderedTranscript}`,
       },
     ],
-    text: { format: zodTextFormat(claimExtractionSchema, "fnol_claim") },
+    text: { format: zodTextFormat(claimIntakeSchema, "fnol_claim_intake") },
   });
 
   if (!response.output_parsed) {
@@ -64,6 +55,11 @@ export async function analyzeClaim(
     filedAt: now.toISOString(),
     status: "Needs review",
     taskStatus: process.env.BOX_REVIEWER_USER_ID ? "Assigned" : "Pending",
+    coverageStatus: "Needs review",
+    coverageRationale: "Pending Box AI policy analysis.",
+    policyReferences: [],
+    deductible: "Needs review",
+    nextSteps: ["Complete policy analysis and route the claim to a human reviewer."],
   };
 }
 

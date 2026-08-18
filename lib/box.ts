@@ -1,10 +1,22 @@
 import { demoClaims } from "@/lib/mock-data";
-import { claimSchema, type Claim, type TranscriptTurn } from "@/lib/types";
-import { claimToMarkdown } from "@/lib/report";
+import { claimIntakeToMarkdown, claimToMarkdown } from "@/lib/report";
+import {
+  claimAnalysisSchema,
+  claimSchema,
+  type Claim,
+  type ClaimAnalysis,
+  type TranscriptTurn,
+} from "@/lib/types";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const BOX_API = "https://api.box.com/2.0";
 const BOX_UPLOAD_API = "https://upload.box.com/api/2.0";
 const BOX_TOKEN_URL = "https://api.box.com/oauth2/token";
+const POLICY_FILE_NAME = "homeowners-policy.md";
+const policyContents = readFileSync(join(process.cwd(), "data", POLICY_FILE_NAME));
+const policySha1 = createHash("sha1").update(policyContents).digest("hex");
 
 type CachedBoxToken = {
   accessToken: string;
@@ -13,6 +25,7 @@ type CachedBoxToken = {
 
 let cachedBoxToken: CachedBoxToken | undefined;
 let pendingBoxToken: Promise<string> | undefined;
+let pendingPolicyFile: Promise<string | undefined> | undefined;
 
 const boxCredentialNames = ["BOX_CLIENT_ID", "BOX_CLIENT_SECRET", "BOX_ENTERPRISE_ID"] as const;
 
@@ -121,7 +134,13 @@ async function boxFetch(url: string, init: RequestInit = {}, retryUnauthorized =
   return response;
 }
 
-function metadataFor(claim: Claim): Record<string, string> {
+type AnalysisState = {
+  analysisStatus: "Pending" | "Complete" | "Failed";
+  policyFileId: string;
+  analysisCompletedAt?: string;
+};
+
+function metadataFor(claim: Claim, analysis: AnalysisState): Record<string, string> {
   return {
     claimNumber: claim.claimNumber,
     claimantName: claim.claimantName,
@@ -142,7 +161,83 @@ function metadataFor(claim: Claim): Record<string, string> {
     policyReferences: JSON.stringify(claim.policyReferences).slice(0, 1000),
     nextSteps: JSON.stringify(claim.nextSteps).slice(0, 1000),
     notes: JSON.stringify(claim.notes).slice(0, 1000),
+    analysisProvider: "Box AI",
+    analysisStatus: analysis.analysisStatus,
+    policyFileId: analysis.policyFileId,
+    ...(analysis.analysisCompletedAt ? { analysisCompletedAt: analysis.analysisCompletedAt } : {}),
   };
+}
+
+async function uploadTextFile(name: string, contents: BlobPart, parentId: string): Promise<string> {
+  const form = new FormData();
+  form.append("attributes", JSON.stringify({ name, parent: { id: parentId } }));
+  form.append("file", new Blob([contents], { type: "text/markdown" }), name);
+
+  const response = await boxFetch(`${BOX_UPLOAD_API}/files/content`, { method: "POST", body: form });
+  const body = (await response.json()) as { entries?: Array<{ id: string }> };
+  const fileId = body.entries?.[0]?.id;
+  if (!fileId) throw new Error(`Box uploaded ${name} without returning a file ID`);
+  return fileId;
+}
+
+async function uploadTextFileVersion(fileId: string, name: string, contents: BlobPart): Promise<void> {
+  const form = new FormData();
+  form.append("attributes", JSON.stringify({ name }));
+  form.append("file", new Blob([contents], { type: "text/markdown" }), name);
+  await boxFetch(`${BOX_UPLOAD_API}/files/${fileId}/content`, { method: "POST", body: form });
+}
+
+type BoxAiAskResponse = {
+  answer?: string;
+};
+
+const BOX_AI_PROMPT = `Compare the first-notice-of-loss report with the homeowners policy and return only one valid JSON object. Do not use Markdown fences.
+
+Required shape:
+{
+  "coverageStatus": "Likely covered" | "Partially covered" | "Needs review" | "Likely excluded",
+  "coverageRationale": "concise preliminary rationale",
+  "policyReferences": ["specific policy section or heading"],
+  "deductible": "applicable deductible or Needs review",
+  "nextSteps": ["prioritized safety, mitigation, documentation, or review action"],
+  "notes": ["short ambiguity or human-review note"]
+}
+
+Treat the claim report as reported facts and the policy file as the only source of policy terms. Never invent missing facts or policy language. Choose "Needs review" when facts are insufficient. This is preliminary triage, not a binding coverage decision, and the result must be reviewed by a human adjuster.`;
+
+export function parseBoxAiAnalysis(answer: string): ClaimAnalysis {
+  const trimmed = answer.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start === -1 || end < start) throw new Error("Box AI did not return a JSON analysis");
+  return claimAnalysisSchema.parse(JSON.parse(trimmed.slice(start, end + 1)));
+}
+
+async function analyzeClaimWithBox(claimFileId: string, policyFileId: string): Promise<ClaimAnalysis> {
+  const response = await boxFetch(`${BOX_API}/ai/ask`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      mode: "multiple_item_qa",
+      prompt: BOX_AI_PROMPT,
+      items: [
+        { type: "file", id: claimFileId },
+        { type: "file", id: policyFileId },
+      ],
+      include_citations: true,
+    }),
+  });
+  const body = (await response.json()) as BoxAiAskResponse;
+  if (!body.answer) throw new Error("Box AI returned an empty analysis");
+  return parseBoxAiAnalysis(body.answer);
+}
+
+function metadataPatch(metadata: Record<string, string>) {
+  return Object.entries(metadata).map(([key, value]) => ({
+    op: "add",
+    path: `/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`,
+    value,
+  }));
 }
 
 function parseArray(value?: string): string[] {
@@ -187,26 +282,96 @@ export async function getClaimTranscript(fileId: string): Promise<TranscriptTurn
   return parseTranscriptFromMarkdown(await response.text());
 }
 
+async function syncPolicyToBox(): Promise<string> {
+  const folderId = process.env.BOX_FOLDER_ID || "0";
+  const fields = encodeURIComponent("id,type,name,sha1");
+  const response = await boxFetch(`${BOX_API}/folders/${folderId}/items?limit=1000&fields=${fields}`);
+  const body = (await response.json()) as {
+    entries?: Array<{ id: string; type: string; name: string; sha1?: string }>;
+  };
+  const existing = body.entries?.find((entry) => entry.type === "file" && entry.name === POLICY_FILE_NAME);
+
+  if (!existing) return uploadTextFile(POLICY_FILE_NAME, policyContents, folderId);
+
+  if (existing.sha1?.toLowerCase() !== policySha1) {
+    await uploadTextFileVersion(existing.id, POLICY_FILE_NAME, policyContents);
+  }
+
+  return existing.id;
+}
+
+export async function ensurePolicyInBox(): Promise<string | undefined> {
+  if (!hasAnyBoxCredentials()) return undefined;
+  if (!pendingPolicyFile) {
+    pendingPolicyFile = syncPolicyToBox().catch((error) => {
+      pendingPolicyFile = undefined;
+      throw error;
+    });
+  }
+  return pendingPolicyFile;
+}
+
 export async function saveClaimToBox(claim: Claim): Promise<Claim> {
   if (!hasAnyBoxCredentials()) return claim;
 
-  const markdown = claimToMarkdown(claim);
-  const form = new FormData();
-  form.append(
-    "attributes",
-    JSON.stringify({ name: `${claim.claimNumber}.md`, parent: { id: process.env.BOX_FOLDER_ID || "0" } }),
-  );
-  form.append("file", new Blob([markdown], { type: "text/markdown" }), `${claim.claimNumber}.md`);
+  const policyFileId = await ensurePolicyInBox();
+  if (!policyFileId) throw new Error("The policy could not be synchronized to Box");
 
-  const upload = await boxFetch(`${BOX_UPLOAD_API}/files/content`, { method: "POST", body: form });
-  const uploadBody = (await upload.json()) as { entries?: Array<{ id: string }> };
-  const fileId = uploadBody.entries?.[0]?.id;
-  if (!fileId) throw new Error("Box upload succeeded without a file ID");
+  const claimForBox: Claim = {
+    ...claim,
+    taskStatus: process.env.BOX_REVIEWER_USER_ID ? "Assigned" : "Pending",
+  };
+  const fileName = `${claim.claimNumber}.md`;
+  const fileId = await uploadTextFile(
+    fileName,
+    claimIntakeToMarkdown(claimForBox),
+    process.env.BOX_FOLDER_ID || "0",
+  );
 
   await boxFetch(`${BOX_API}/files/${fileId}/metadata/global/properties`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(metadataFor(claim)),
+    body: JSON.stringify(metadataFor(claimForBox, { analysisStatus: "Pending", policyFileId })),
+  });
+
+  let analyzedClaim: Claim;
+  let analysisStatus: AnalysisState["analysisStatus"];
+  try {
+    const analysis = await analyzeClaimWithBox(fileId, policyFileId);
+    analyzedClaim = {
+      ...claimForBox,
+      ...analysis,
+      notes: [...new Set([...claimForBox.notes, ...analysis.notes])],
+    };
+    analysisStatus = "Complete";
+  } catch (error) {
+    console.error(`Box AI analysis failed for ${claim.claimNumber}:`, error);
+    analyzedClaim = {
+      ...claimForBox,
+      coverageStatus: "Needs review",
+      coverageRationale:
+        "Box AI policy analysis was unavailable. A human adjuster must compare this claim with the policy.",
+      policyReferences: [],
+      deductible: "Needs review",
+      nextSteps: ["Review the claim and homeowners policy manually before making a coverage decision."],
+      notes: [...new Set([...claimForBox.notes, "Automated policy analysis did not complete."])],
+    };
+    analysisStatus = "Failed";
+  }
+
+  await uploadTextFileVersion(fileId, fileName, claimToMarkdown(analyzedClaim));
+  await boxFetch(`${BOX_API}/files/${fileId}/metadata/global/properties`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json-patch+json" },
+    body: JSON.stringify(
+      metadataPatch(
+        metadataFor(analyzedClaim, {
+          analysisStatus,
+          policyFileId,
+          analysisCompletedAt: new Date().toISOString(),
+        }),
+      ),
+    ),
   });
 
   const taskResponse = await boxFetch(`${BOX_API}/tasks`, {
@@ -215,7 +380,7 @@ export async function saveClaimToBox(claim: Claim): Promise<Claim> {
     body: JSON.stringify({
       item: { id: fileId, type: "file" },
       action: "review",
-      message: `Review FNOL ${claim.claimNumber} and confirm the preliminary coverage assessment.`,
+      message: `Review FNOL ${claim.claimNumber} and confirm the preliminary Box AI policy assessment.`,
       completion_rule: "all_assignees",
     }),
   });
@@ -233,7 +398,7 @@ export async function saveClaimToBox(claim: Claim): Promise<Claim> {
   }
 
   return {
-    ...claim,
+    ...analyzedClaim,
     boxFileId: fileId,
     boxUrl: `https://app.box.com/file/${fileId}`,
     taskStatus: process.env.BOX_REVIEWER_USER_ID ? "Assigned" : "Pending",
@@ -250,6 +415,8 @@ type BoxEntry = {
 
 export async function listClaims(): Promise<Claim[]> {
   if (!hasAnyBoxCredentials()) return demoClaims;
+
+  await ensurePolicyInBox();
 
   const folderId = process.env.BOX_FOLDER_ID || "0";
   const fields = encodeURIComponent("id,type,name,created_at,metadata.global.properties");
