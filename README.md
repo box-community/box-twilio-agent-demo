@@ -1,3 +1,5 @@
+![screenshot](./screenshot.png)
+
 # Harbor FNOL Demo
 
 A homeowner calls a Twilio number, speaks with an OpenAI intake agent, and the completed first notice of loss is stored in Box. OpenAI extracts reported facts only. Box AI compares the FNOL with a sample homeowners policy. The Markdown report, `global/properties` metadata, and review task live in Box. The Next.js dashboard reads that folder; there is no application database.
