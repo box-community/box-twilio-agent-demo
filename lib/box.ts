@@ -1,5 +1,5 @@
 import { demoClaims } from "@/lib/mock-data";
-import { claimSchema, type Claim } from "@/lib/types";
+import { claimSchema, type Claim, type TranscriptTurn } from "@/lib/types";
 import { claimToMarkdown } from "@/lib/report";
 
 const BOX_API = "https://api.box.com/2.0";
@@ -153,6 +153,38 @@ function parseArray(value?: string): string[] {
   } catch {
     return [];
   }
+}
+
+export function parseTranscriptFromMarkdown(markdown: string): TranscriptTurn[] {
+  const heading = /^## Call transcript\s*$/m.exec(markdown);
+  if (!heading || heading.index === undefined) return [];
+
+  const afterHeading = markdown.slice(heading.index + heading[0].length);
+  const nextHeadingIndex = afterHeading.search(/^##\s/m);
+  const section = nextHeadingIndex === -1 ? afterHeading : afterHeading.slice(0, nextHeadingIndex);
+  const speakerPattern = /^\*\*(Caller|Harbor):\*\*\s*/gm;
+  const speakers = [...section.matchAll(speakerPattern)];
+
+  return speakers
+    .map((speaker, index): TranscriptTurn | null => {
+      const start = (speaker.index ?? 0) + speaker[0].length;
+      const end = speakers[index + 1]?.index ?? section.length;
+      const text = section.slice(start, end).trim();
+      if (!text) return null;
+
+      return {
+        role: speaker[1] === "Caller" ? "caller" : "agent",
+        text,
+      };
+    })
+    .filter((turn): turn is TranscriptTurn => turn !== null);
+}
+
+export async function getClaimTranscript(fileId: string): Promise<TranscriptTurn[]> {
+  if (!/^\d+$/.test(fileId)) throw new Error("Invalid Box file ID");
+
+  const response = await boxFetch(`${BOX_API}/files/${encodeURIComponent(fileId)}/content`);
+  return parseTranscriptFromMarkdown(await response.text());
 }
 
 export async function saveClaimToBox(claim: Claim): Promise<Claim> {

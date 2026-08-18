@@ -24,13 +24,15 @@ import {
   Wind,
 } from "lucide-react";
 import { useMemo, useState } from "react";
-import type { Claim } from "@/lib/types";
+import type { Claim, TranscriptTurn } from "@/lib/types";
 
 type Props = {
   initialClaims: Claim[];
   demoMode: boolean;
   connectionError?: string;
 };
+
+type TranscriptLoadState = "loading" | "loaded" | "error";
 
 const lossIcons = {
   Water: Droplets,
@@ -66,6 +68,7 @@ export function ClaimWorkspace({ initialClaims, demoMode, connectionError }: Pro
   const [query, setQuery] = useState("");
   const [processing, setProcessing] = useState(false);
   const [notice, setNotice] = useState<string | undefined>(connectionError);
+  const [transcriptLoads, setTranscriptLoads] = useState<Record<string, TranscriptLoadState>>({});
 
   const filteredClaims = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -81,6 +84,36 @@ export function ClaimWorkspace({ initialClaims, demoMode, connectionError }: Pro
   const selected = claims.find((claim) => claim.id === selectedId) || claims[0];
   const needsReview = claims.filter((claim) => claim.status === "Needs review").length;
   const urgent = claims.filter((claim) => ["High", "Critical"].includes(claim.severity)).length;
+  const selectedTranscriptLoad = selected ? transcriptLoads[selected.id] : undefined;
+
+  async function openTranscript() {
+    setTab("transcript");
+    if (
+      !selected?.boxFileId ||
+      selected.transcript.length > 0 ||
+      selectedTranscriptLoad === "loading" ||
+      selectedTranscriptLoad === "loaded"
+    ) {
+      return;
+    }
+
+    setTranscriptLoads((current) => ({ ...current, [selected.id]: "loading" }));
+
+    try {
+      const response = await fetch(`/api/claims/${encodeURIComponent(selected.boxFileId)}/transcript`);
+      const body = (await response.json()) as { transcript?: TranscriptTurn[]; error?: string };
+      if (!response.ok || !body.transcript) throw new Error(body.error || "The transcript could not be loaded");
+
+      setClaims((current) =>
+        current.map((claim) => (claim.id === selected.id ? { ...claim, transcript: body.transcript! } : claim)),
+      );
+      setTranscriptLoads((current) => ({ ...current, [selected.id]: "loaded" }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "The transcript could not be loaded";
+      setTranscriptLoads((current) => ({ ...current, [selected.id]: "error" }));
+      setNotice(message);
+    }
+  }
 
   async function runDemoCall() {
     setProcessing(true);
@@ -219,7 +252,9 @@ export function ClaimWorkspace({ initialClaims, demoMode, connectionError }: Pro
 
               <div className="tabs" role="tablist">
                 <button className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}>Overview</button>
-                <button className={tab === "transcript" ? "active" : ""} onClick={() => setTab("transcript")}>Transcript <span>{selected.transcript.length}</span></button>
+                <button className={tab === "transcript" ? "active" : ""} onClick={() => void openTranscript()}>
+                  Transcript <span>{selected.transcript.length || (selected.boxFileId && selectedTranscriptLoad !== "loaded" ? "…" : 0)}</span>
+                </button>
               </div>
 
               {tab === "overview" ? (
@@ -291,12 +326,18 @@ export function ClaimWorkspace({ initialClaims, demoMode, connectionError }: Pro
               ) : (
                 <div className="transcript-view">
                   <div className="transcript-intro"><Headphones size={18} /><div><strong>Call transcript</strong><span>Captured by Twilio Agent Connect</span></div></div>
-                  {selected.transcript.length ? selected.transcript.map((turn, index) => (
+                  {selectedTranscriptLoad === "loading" ? (
+                    <div className="empty-state transcript-empty"><LoaderCircle className="spin" size={18} /> Loading transcript from Box…</div>
+                  ) : selected.transcript.length ? selected.transcript.map((turn, index) => (
                     <div className={`turn ${turn.role}`} key={`${turn.role}-${index}`}>
                       <span className="speaker">{turn.role === "caller" ? initials(selected.claimantName) : "H"}</span>
                       <div><strong>{turn.role === "caller" ? selected.claimantName : "Harbor agent"}</strong><p>{turn.text}</p></div>
                     </div>
-                  )) : <div className="empty-state transcript-empty">The full transcript is available in the Box report.</div>}
+                  )) : selectedTranscriptLoad === "error" ? (
+                    <div className="empty-state transcript-empty">The transcript could not be loaded. Select the tab again to retry.</div>
+                  ) : (
+                    <div className="empty-state transcript-empty">No transcript was found in the Box report.</div>
+                  )}
                 </div>
               )}
             </article>

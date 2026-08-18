@@ -242,6 +242,7 @@ Box remains the claim system of record. The app has no database and the dashboar
 | --- | --- | --- | --- |
 | `/` | `GET` | Web | Claims-desk dashboard. |
 | `/api/claims` | `GET` | Web | Lists Box-backed claims or demo claims. |
+| `/api/claims/:fileId/transcript` | `GET` | Web | Loads and parses a transcript from its Box report. |
 | `/api/claims/demo` | `POST` | Web | Processes the bundled transcript and optionally saves it to Box. |
 | `/voice/twiml` | `POST` | Voice | Returns TwiML that connects a call to Conversation Relay. |
 | `/voice/ws` | WebSocket | Voice | Carries caller prompts and agent responses. |

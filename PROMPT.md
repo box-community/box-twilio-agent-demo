@@ -31,7 +31,7 @@ For each completed call:
 - Create a Box `review` task on the report. Assign it when `BOX_REVIEWER_USER_ID` is configured.
 - Use `BOX_FOLDER_ID`, defaulting to the CCG Service Account's root folder (`0`).
 
-The dashboard must read claims from that Box folder and link to the source file. If no Box credentials are configured, show a few realistic sample claims instead. Include a **Run demo call** action that exercises processing; use a bundled transcript when live credentials are unavailable.
+The dashboard must read claims from that Box folder and link to the source file. Load and parse the report's transcript from Box only when the user opens its Transcript tab. If no Box credentials are configured, show a few realistic sample claims instead. Include a **Run demo call** action that exercises processing; use a bundled transcript when live credentials are unavailable.
 
 ## Dashboard
 
