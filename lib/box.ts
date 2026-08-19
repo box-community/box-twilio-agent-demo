@@ -10,21 +10,14 @@ import {
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { Readable } from "node:stream";
+import { BoxCcgAuth, BoxClient, CcgConfig } from "box/sdk";
 
-const BOX_API = "https://api.box.com/2.0";
-const BOX_UPLOAD_API = "https://upload.box.com/api/2.0";
-const BOX_TOKEN_URL = "https://api.box.com/oauth2/token";
 const POLICY_FILE_NAME = "homeowners-policy.md";
 const policyContents = readFileSync(join(process.cwd(), "data", POLICY_FILE_NAME));
 const policySha1 = createHash("sha1").update(policyContents).digest("hex");
 
-type CachedBoxToken = {
-  accessToken: string;
-  expiresAt: number;
-};
-
-let cachedBoxToken: CachedBoxToken | undefined;
-let pendingBoxToken: Promise<string> | undefined;
+let cachedBoxClient: BoxClient | undefined;
 let pendingPolicyFile: Promise<string | undefined> | undefined;
 
 const boxCredentialNames = ["BOX_CLIENT_ID", "BOX_CLIENT_SECRET", "BOX_ENTERPRISE_ID"] as const;
@@ -58,80 +51,19 @@ function requireBoxCredentials() {
   };
 }
 
-async function requestBoxAccessToken(): Promise<string> {
+function getBoxClient(): BoxClient {
+  if (cachedBoxClient) return cachedBoxClient;
+
   const credentials = requireBoxCredentials();
-  const body = new URLSearchParams({
-    grant_type: "client_credentials",
-    client_id: credentials.clientId,
-    client_secret: credentials.clientSecret,
-    box_subject_type: "enterprise",
-    box_subject_id: credentials.enterpriseId,
+  const auth = new BoxCcgAuth({
+    config: new CcgConfig({
+      clientId: credentials.clientId,
+      clientSecret: credentials.clientSecret,
+      enterpriseId: credentials.enterpriseId,
+    }),
   });
-
-  const response = await fetch(BOX_TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body,
-  });
-
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(`Box CCG authentication failed (${response.status}): ${detail.slice(0, 500)}`);
-  }
-
-  const token = (await response.json()) as { access_token?: string; expires_in?: number };
-  if (!token.access_token) {
-    throw new Error("Box CCG authentication succeeded without an access token");
-  }
-
-  const expiresIn = typeof token.expires_in === "number" ? token.expires_in : 3600;
-  cachedBoxToken = {
-    accessToken: token.access_token,
-    // Refresh at least one minute before Box says the token expires.
-    expiresAt: Date.now() + Math.max(expiresIn - 60, 30) * 1000,
-  };
-
-  return token.access_token;
-}
-
-async function getBoxAccessToken(forceRefresh = false): Promise<string> {
-  if (!forceRefresh && cachedBoxToken && cachedBoxToken.expiresAt > Date.now()) {
-    return cachedBoxToken.accessToken;
-  }
-
-  if (!forceRefresh && pendingBoxToken) return pendingBoxToken;
-
-  cachedBoxToken = undefined;
-  pendingBoxToken = requestBoxAccessToken();
-
-  try {
-    return await pendingBoxToken;
-  } finally {
-    pendingBoxToken = undefined;
-  }
-}
-
-async function boxFetch(url: string, init: RequestInit = {}, retryUnauthorized = true): Promise<Response> {
-  const accessToken = await getBoxAccessToken(!retryUnauthorized);
-  const response = await fetch(url, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      ...init.headers,
-    },
-  });
-
-  if (response.status === 401 && retryUnauthorized) {
-    cachedBoxToken = undefined;
-    return boxFetch(url, init, false);
-  }
-
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(`Box API ${response.status}: ${detail.slice(0, 500)}`);
-  }
-
-  return response;
+  cachedBoxClient = new BoxClient({ auth });
+  return cachedBoxClient;
 }
 
 type AnalysisState = {
@@ -168,28 +100,38 @@ function metadataFor(claim: Claim, analysis: AnalysisState): Record<string, stri
   };
 }
 
-async function uploadTextFile(name: string, contents: BlobPart, parentId: string): Promise<string> {
-  const form = new FormData();
-  form.append("attributes", JSON.stringify({ name, parent: { id: parentId } }));
-  form.append("file", new Blob([contents], { type: "text/markdown" }), name);
-
-  const response = await boxFetch(`${BOX_UPLOAD_API}/files/content`, { method: "POST", body: form });
-  const body = (await response.json()) as { entries?: Array<{ id: string }> };
-  const fileId = body.entries?.[0]?.id;
+async function uploadTextFile(
+  client: BoxClient,
+  name: string,
+  contents: string | Buffer,
+  parentId: string,
+): Promise<string> {
+  const file = Buffer.isBuffer(contents) ? contents : Buffer.from(contents, "utf8");
+  const uploaded = await client.uploads.uploadFile({
+    attributes: { name, parent: { id: parentId } },
+    file: Readable.from([file]),
+    fileFileName: name,
+    fileContentType: "text/markdown",
+  });
+  const fileId = uploaded.entries?.[0]?.id;
   if (!fileId) throw new Error(`Box uploaded ${name} without returning a file ID`);
   return fileId;
 }
 
-async function uploadTextFileVersion(fileId: string, name: string, contents: BlobPart): Promise<void> {
-  const form = new FormData();
-  form.append("attributes", JSON.stringify({ name }));
-  form.append("file", new Blob([contents], { type: "text/markdown" }), name);
-  await boxFetch(`${BOX_UPLOAD_API}/files/${fileId}/content`, { method: "POST", body: form });
+async function uploadTextFileVersion(
+  client: BoxClient,
+  fileId: string,
+  name: string,
+  contents: string | Buffer,
+): Promise<void> {
+  const file = Buffer.isBuffer(contents) ? contents : Buffer.from(contents, "utf8");
+  await client.uploads.uploadFileVersion(fileId, {
+    attributes: { name },
+    file: Readable.from([file]),
+    fileFileName: name,
+    fileContentType: "text/markdown",
+  });
 }
-
-type BoxAiAskResponse = {
-  answer?: string;
-};
 
 const BOX_AI_PROMPT = `Compare the first-notice-of-loss report with the homeowners policy and return only one valid JSON object. Do not use Markdown fences.
 
@@ -213,23 +155,22 @@ export function parseBoxAiAnalysis(answer: string): ClaimAnalysis {
   return claimAnalysisSchema.parse(JSON.parse(trimmed.slice(start, end + 1)));
 }
 
-async function analyzeClaimWithBox(claimFileId: string, policyFileId: string): Promise<ClaimAnalysis> {
-  const response = await boxFetch(`${BOX_API}/ai/ask`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      mode: "multiple_item_qa",
-      prompt: BOX_AI_PROMPT,
-      items: [
-        { type: "file", id: claimFileId },
-        { type: "file", id: policyFileId },
-      ],
-      include_citations: true,
-    }),
+async function analyzeClaimWithBox(
+  client: BoxClient,
+  claimFileId: string,
+  policyFileId: string,
+): Promise<ClaimAnalysis> {
+  const response = await client.ai.createAiAsk({
+    mode: "multiple_item_qa",
+    prompt: BOX_AI_PROMPT,
+    items: [
+      { type: "file", id: claimFileId },
+      { type: "file", id: policyFileId },
+    ],
+    includeCitations: true,
   });
-  const body = (await response.json()) as BoxAiAskResponse;
-  if (!body.answer) throw new Error("Box AI returned an empty analysis");
-  return parseBoxAiAnalysis(body.answer);
+  if (!response?.answer) throw new Error("Box AI returned an empty analysis");
+  return parseBoxAiAnalysis(response.answer);
 }
 
 function metadataPatch(metadata: Record<string, string>) {
@@ -275,35 +216,38 @@ export function parseTranscriptFromMarkdown(markdown: string): TranscriptTurn[] 
     .filter((turn): turn is TranscriptTurn => turn !== null);
 }
 
-export async function getClaimTranscript(fileId: string): Promise<TranscriptTurn[]> {
+export async function getClaimTranscript(fileId: string, client?: BoxClient): Promise<TranscriptTurn[]> {
   if (!/^\d+$/.test(fileId)) throw new Error("Invalid Box file ID");
 
-  const response = await boxFetch(`${BOX_API}/files/${encodeURIComponent(fileId)}/content`);
-  return parseTranscriptFromMarkdown(await response.text());
+  const contents = await (client || getBoxClient()).downloads.downloadFile(fileId);
+  if (!contents) throw new Error("Box returned an empty claim report");
+  const chunks: Buffer[] = [];
+  for await (const chunk of contents) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return parseTranscriptFromMarkdown(Buffer.concat(chunks).toString("utf8"));
 }
 
-async function syncPolicyToBox(): Promise<string> {
+async function syncPolicyToBox(client: BoxClient): Promise<string> {
   const folderId = process.env.BOX_FOLDER_ID || "0";
-  const fields = encodeURIComponent("id,type,name,sha1");
-  const response = await boxFetch(`${BOX_API}/folders/${folderId}/items?limit=1000&fields=${fields}`);
-  const body = (await response.json()) as {
-    entries?: Array<{ id: string; type: string; name: string; sha1?: string }>;
-  };
-  const existing = body.entries?.find((entry) => entry.type === "file" && entry.name === POLICY_FILE_NAME);
+  const items = await client.folders.getFolderItems(folderId, {
+    queryParams: { limit: 1000, fields: ["id", "type", "name", "sha1"] },
+  });
+  const existing = items.entries?.find((entry) => entry.type === "file" && entry.name === POLICY_FILE_NAME);
 
-  if (!existing) return uploadTextFile(POLICY_FILE_NAME, policyContents, folderId);
+  if (!existing) return uploadTextFile(client, POLICY_FILE_NAME, policyContents, folderId);
 
-  if (existing.sha1?.toLowerCase() !== policySha1) {
-    await uploadTextFileVersion(existing.id, POLICY_FILE_NAME, policyContents);
+  if (existing.type === "file" && existing.sha1?.toLowerCase() !== policySha1) {
+    await uploadTextFileVersion(client, existing.id, POLICY_FILE_NAME, policyContents);
   }
 
   return existing.id;
 }
 
-export async function ensurePolicyInBox(): Promise<string | undefined> {
-  if (!hasAnyBoxCredentials()) return undefined;
+export async function ensurePolicyInBox(client?: BoxClient): Promise<string | undefined> {
+  if (!client && !hasAnyBoxCredentials()) return undefined;
   if (!pendingPolicyFile) {
-    pendingPolicyFile = syncPolicyToBox().catch((error) => {
+    pendingPolicyFile = syncPolicyToBox(client || getBoxClient()).catch((error) => {
       pendingPolicyFile = undefined;
       throw error;
     });
@@ -311,10 +255,11 @@ export async function ensurePolicyInBox(): Promise<string | undefined> {
   return pendingPolicyFile;
 }
 
-export async function saveClaimToBox(claim: Claim): Promise<Claim> {
-  if (!hasAnyBoxCredentials()) return claim;
+export async function saveClaimToBox(claim: Claim, client?: BoxClient): Promise<Claim> {
+  if (!client && !hasAnyBoxCredentials()) return claim;
 
-  const policyFileId = await ensurePolicyInBox();
+  const box = client || getBoxClient();
+  const policyFileId = await ensurePolicyInBox(box);
   if (!policyFileId) throw new Error("The policy could not be synchronized to Box");
 
   const claimForBox: Claim = {
@@ -323,21 +268,23 @@ export async function saveClaimToBox(claim: Claim): Promise<Claim> {
   };
   const fileName = `${claim.claimNumber}.md`;
   const fileId = await uploadTextFile(
+    box,
     fileName,
     claimIntakeToMarkdown(claimForBox),
     process.env.BOX_FOLDER_ID || "0",
   );
 
-  await boxFetch(`${BOX_API}/files/${fileId}/metadata/global/properties`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(metadataFor(claimForBox, { analysisStatus: "Pending", policyFileId })),
-  });
+  await box.fileMetadata.createFileMetadataById(
+    fileId,
+    "global",
+    "properties",
+    metadataFor(claimForBox, { analysisStatus: "Pending", policyFileId }),
+  );
 
   let analyzedClaim: Claim;
   let analysisStatus: AnalysisState["analysisStatus"];
   try {
-    const analysis = await analyzeClaimWithBox(fileId, policyFileId);
+    const analysis = await analyzeClaimWithBox(box, fileId, policyFileId);
     analyzedClaim = {
       ...claimForBox,
       ...analysis,
@@ -359,41 +306,32 @@ export async function saveClaimToBox(claim: Claim): Promise<Claim> {
     analysisStatus = "Failed";
   }
 
-  await uploadTextFileVersion(fileId, fileName, claimToMarkdown(analyzedClaim));
-  await boxFetch(`${BOX_API}/files/${fileId}/metadata/global/properties`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json-patch+json" },
-    body: JSON.stringify(
-      metadataPatch(
-        metadataFor(analyzedClaim, {
-          analysisStatus,
-          policyFileId,
-          analysisCompletedAt: new Date().toISOString(),
-        }),
-      ),
+  await uploadTextFileVersion(box, fileId, fileName, claimToMarkdown(analyzedClaim));
+  await box.fileMetadata.updateFileMetadataById(
+    fileId,
+    "global",
+    "properties",
+    metadataPatch(
+      metadataFor(analyzedClaim, {
+        analysisStatus,
+        policyFileId,
+        analysisCompletedAt: new Date().toISOString(),
+      }),
     ),
-  });
+  );
 
-  const taskResponse = await boxFetch(`${BOX_API}/tasks`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      item: { id: fileId, type: "file" },
-      action: "review",
-      message: `Review FNOL ${claim.claimNumber} and confirm the preliminary Box AI policy assessment.`,
-      completion_rule: "all_assignees",
-    }),
+  const task = await box.tasks.createTask({
+    item: { id: fileId, type: "file" },
+    action: "review",
+    message: `Review FNOL ${claim.claimNumber} and confirm the preliminary Box AI policy assessment.`,
+    completionRule: "all_assignees",
   });
-  const task = (await taskResponse.json()) as { id: string };
 
   if (process.env.BOX_REVIEWER_USER_ID) {
-    await boxFetch(`${BOX_API}/task_assignments`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        task: { id: task.id, type: "task" },
-        assign_to: { id: process.env.BOX_REVIEWER_USER_ID },
-      }),
+    if (!task.id) throw new Error("Box created a review task without returning its ID");
+    await box.taskAssignments.createTaskAssignment({
+      task: { id: task.id, type: "task" },
+      assignTo: { id: process.env.BOX_REVIEWER_USER_ID },
     });
   }
 
@@ -405,28 +343,30 @@ export async function saveClaimToBox(claim: Claim): Promise<Claim> {
   };
 }
 
-type BoxEntry = {
-  id: string;
-  type: string;
-  name: string;
-  created_at?: string;
-  metadata?: { global?: { properties?: Record<string, string> } };
-};
+export async function listClaims(client?: BoxClient): Promise<Claim[]> {
+  if (!client && !hasAnyBoxCredentials()) return demoClaims;
 
-export async function listClaims(): Promise<Claim[]> {
-  if (!hasAnyBoxCredentials()) return demoClaims;
-
-  await ensurePolicyInBox();
+  const box = client || getBoxClient();
+  await ensurePolicyInBox(box);
 
   const folderId = process.env.BOX_FOLDER_ID || "0";
-  const fields = encodeURIComponent("id,type,name,created_at,metadata.global.properties");
-  const response = await boxFetch(`${BOX_API}/folders/${folderId}/items?limit=100&fields=${fields}`);
-  const body = (await response.json()) as { entries?: BoxEntry[] };
+  const items = await box.folders.getFolderItems(folderId, {
+    queryParams: {
+      limit: 100,
+      fields: ["id", "type", "name", "created_at", "metadata.global.properties"],
+    },
+  });
 
-  const claims = (body.entries || [])
-    .filter((entry) => entry.type === "file" && entry.name.endsWith(".md"))
+  const claims = (items.entries || [])
+    .filter((entry) => entry.type === "file" && entry.name?.endsWith(".md"))
     .map((entry) => {
-      const metadata = entry.metadata?.global?.properties;
+      if (entry.type !== "file") return null;
+      const values = entry.metadata?.extraData?.global?.properties?.extraData;
+      const metadata = values
+        ? Object.fromEntries(
+            Object.entries(values).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+          )
+        : undefined;
       if (!metadata?.claimNumber) return null;
 
       const candidate = {
@@ -448,7 +388,7 @@ export async function listClaims(): Promise<Claim[]> {
         nextSteps: parseArray(metadata.nextSteps),
         notes: parseArray(metadata.notes),
         transcript: [],
-        filedAt: metadata.filedAt || entry.created_at || new Date().toISOString(),
+        filedAt: metadata.filedAt || entry.createdAt?.value.toISOString() || new Date().toISOString(),
         status: metadata.status || "Needs review",
         taskStatus: metadata.taskStatus || "Pending",
         boxFileId: entry.id,

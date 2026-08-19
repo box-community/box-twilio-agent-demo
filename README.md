@@ -34,7 +34,7 @@ Both services read `.env.local`.
 
 **OpenAI** — [API key](https://platform.openai.com/api-keys). Used for spoken replies and structured FNOL extraction. `OPENAI_MODEL` defaults to `gpt-5.6`.
 
-**Box CCG** — In the [Developer Console](https://app.box.com/developers/console), create a Client Credentials Grant Platform App. Enable **Read and write all files and folders** and **Manage AI**. App Access Only is enough when files stay in the Service Account's folders; App + Enterprise Access is required to use an existing enterprise folder or assign tasks. A Box Admin must enable Box AI API access and authorize the app (reauthorize after any scope change). Set `BOX_CLIENT_ID`, `BOX_CLIENT_SECRET`, and `BOX_ENTERPRISE_ID`. Optional: `BOX_FOLDER_ID`, `BOX_REVIEWER_USER_ID`. Collaborate the Service Account on any folder it does not own.
+**Box CCG** — In the [Developer Console](https://app.box.com/developers/console), create a Client Credentials Grant Platform App. Enable **Read and write all files and folders** and **Manage AI**. App Access Only is enough when files stay in the Service Account's folders; App + Enterprise Access is required to use an existing enterprise folder or assign tasks. A Box Admin must enable Box AI API access and authorize the app (reauthorize after any scope change). Set `BOX_CLIENT_ID`, `BOX_CLIENT_SECRET`, and `BOX_ENTERPRISE_ID`. Optional: `BOX_FOLDER_ID`, `BOX_REVIEWER_USER_ID`. Collaborate the Service Account on any folder it does not own. Server-side Box calls use the official [`box`](https://www.npmjs.com/package/box) package through its `box/sdk` entry point.
 
 **Twilio** — Account SID, Auth Token, API key SID + secret, and an E.164 voice number.
 
@@ -90,3 +90,4 @@ Do not expose claim data without auth. Twilio Agent Connect is not HIPAA- or PCI
 - [Twilio Agent Connect](https://www.twilio.com/docs/conversations/agent-connect/quickstart)
 - [Box CCG setup](https://developer.box.com/guides/authentication/client-credentials/client-credentials-setup)
 - [Box AI prerequisites](https://developer.box.com/guides/box-ai/ai-tutorials/prerequisites)
+- [Box NPM package](https://www.npmjs.com/package/box)
