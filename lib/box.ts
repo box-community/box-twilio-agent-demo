@@ -14,11 +14,12 @@ import { Readable } from "node:stream";
 import { BoxCcgAuth, BoxClient, CcgConfig } from "box/sdk";
 
 const POLICY_FILE_NAME = "homeowners-policy.md";
+const LOSS_REPORTS_FOLDER_NAME = "Loss Reports";
 const policyContents = readFileSync(join(process.cwd(), "data", POLICY_FILE_NAME));
 const policySha1 = createHash("sha1").update(policyContents).digest("hex");
 
 let cachedBoxClient: BoxClient | undefined;
-let pendingPolicyFile: Promise<string | undefined> | undefined;
+let pendingBoxStructure: Promise<BoxStructure | undefined> | undefined;
 
 const boxCredentialNames = ["BOX_CLIENT_ID", "BOX_CLIENT_SECRET", "BOX_ENTERPRISE_ID"] as const;
 
@@ -70,6 +71,11 @@ type AnalysisState = {
   analysisStatus: "Pending" | "Complete" | "Failed";
   policyFileId: string;
   analysisCompletedAt?: string;
+};
+
+type BoxStructure = {
+  policyFileId: string;
+  lossReportsFolderId: string;
 };
 
 function metadataFor(claim: Claim, analysis: AnalysisState): Record<string, string> {
@@ -228,39 +234,85 @@ export async function getClaimTranscript(fileId: string, client?: BoxClient): Pr
   return parseTranscriptFromMarkdown(Buffer.concat(chunks).toString("utf8"));
 }
 
-async function syncPolicyToBox(client: BoxClient): Promise<string> {
-  const folderId = process.env.BOX_FOLDER_ID || "0";
-  const items = await client.folders.getFolderItems(folderId, {
+async function listWorkspaceItems(client: BoxClient, workspaceFolderId: string) {
+  return client.folders.getFolderItems(workspaceFolderId, {
     queryParams: { limit: 1000, fields: ["id", "type", "name", "sha1"] },
   });
-  const existing = items.entries?.find((entry) => entry.type === "file" && entry.name === POLICY_FILE_NAME);
-
-  if (!existing) return uploadTextFile(client, POLICY_FILE_NAME, policyContents, folderId);
-
-  if (existing.type === "file" && existing.sha1?.toLowerCase() !== policySha1) {
-    await uploadTextFileVersion(client, existing.id, POLICY_FILE_NAME, policyContents);
-  }
-
-  return existing.id;
 }
 
-export async function ensurePolicyInBox(client?: BoxClient): Promise<string | undefined> {
+function isLossReportsName(name?: string) {
+  return name?.toLocaleLowerCase("en-US") === LOSS_REPORTS_FOLDER_NAME.toLocaleLowerCase("en-US");
+}
+
+async function ensureLossReportsFolder(
+  client: BoxClient,
+  workspaceFolderId: string,
+  entries: Awaited<ReturnType<typeof listWorkspaceItems>>["entries"],
+): Promise<string> {
+  const existing = entries?.find((entry) => isLossReportsName(entry.name));
+  if (existing?.type === "folder") return existing.id;
+  if (existing) {
+    throw new Error(`A non-folder item named "${LOSS_REPORTS_FOLDER_NAME}" already exists in BOX_FOLDER_ID`);
+  }
+
+  try {
+    const folder = await client.folders.createFolder({
+      name: LOSS_REPORTS_FOLDER_NAME,
+      parent: { id: workspaceFolderId },
+    });
+    if (!folder.id) throw new Error(`Box created "${LOSS_REPORTS_FOLDER_NAME}" without returning its ID`);
+    return folder.id;
+  } catch (error) {
+    // The web and voice services can start concurrently. If the other service
+    // created the folder after our first listing, resolve that race by reusing it.
+    const refreshed = await listWorkspaceItems(client, workspaceFolderId);
+    const folder = refreshed.entries?.find(
+      (entry) => entry.type === "folder" && isLossReportsName(entry.name),
+    );
+    if (folder) return folder.id;
+    throw error;
+  }
+}
+
+async function syncBoxStructure(client: BoxClient): Promise<BoxStructure> {
+  const workspaceFolderId = process.env.BOX_FOLDER_ID || "0";
+  const items = await listWorkspaceItems(client, workspaceFolderId);
+  const lossReportsFolderId = await ensureLossReportsFolder(client, workspaceFolderId, items.entries);
+  const existingPolicy = items.entries?.find(
+    (entry) => entry.type === "file" && entry.name === POLICY_FILE_NAME,
+  );
+
+  let policyFileId: string;
+  if (!existingPolicy || existingPolicy.type !== "file") {
+    policyFileId = await uploadTextFile(client, POLICY_FILE_NAME, policyContents, workspaceFolderId);
+  } else {
+    if (existingPolicy.sha1?.toLowerCase() !== policySha1) {
+      await uploadTextFileVersion(client, existingPolicy.id, POLICY_FILE_NAME, policyContents);
+    }
+    policyFileId = existingPolicy.id;
+  }
+
+  return { policyFileId, lossReportsFolderId };
+}
+
+export async function ensureBoxStructureInBox(client?: BoxClient): Promise<BoxStructure | undefined> {
   if (!client && !hasAnyBoxCredentials()) return undefined;
-  if (!pendingPolicyFile) {
-    pendingPolicyFile = syncPolicyToBox(client || getBoxClient()).catch((error) => {
-      pendingPolicyFile = undefined;
+  if (!pendingBoxStructure) {
+    pendingBoxStructure = syncBoxStructure(client || getBoxClient()).catch((error) => {
+      pendingBoxStructure = undefined;
       throw error;
     });
   }
-  return pendingPolicyFile;
+  return pendingBoxStructure;
 }
 
 export async function saveClaimToBox(claim: Claim, client?: BoxClient): Promise<Claim> {
   if (!client && !hasAnyBoxCredentials()) return claim;
 
   const box = client || getBoxClient();
-  const policyFileId = await ensurePolicyInBox(box);
-  if (!policyFileId) throw new Error("The policy could not be synchronized to Box");
+  const structure = await ensureBoxStructureInBox(box);
+  if (!structure) throw new Error("The Box workspace could not be initialized");
+  const { policyFileId, lossReportsFolderId } = structure;
 
   const claimForBox: Claim = {
     ...claim,
@@ -271,7 +323,7 @@ export async function saveClaimToBox(claim: Claim, client?: BoxClient): Promise<
     box,
     fileName,
     claimIntakeToMarkdown(claimForBox),
-    process.env.BOX_FOLDER_ID || "0",
+    lossReportsFolderId,
   );
 
   await box.fileMetadata.createFileMetadataById(
@@ -347,10 +399,9 @@ export async function listClaims(client?: BoxClient): Promise<Claim[]> {
   if (!client && !hasAnyBoxCredentials()) return demoClaims;
 
   const box = client || getBoxClient();
-  await ensurePolicyInBox(box);
-
-  const folderId = process.env.BOX_FOLDER_ID || "0";
-  const items = await box.folders.getFolderItems(folderId, {
+  const structure = await ensureBoxStructureInBox(box);
+  if (!structure) return demoClaims;
+  const items = await box.folders.getFolderItems(structure.lossReportsFolderId, {
     queryParams: {
       limit: 100,
       fields: ["id", "type", "name", "created_at", "metadata.global.properties"],

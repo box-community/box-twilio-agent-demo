@@ -7,13 +7,13 @@ import {
   type ConversationId,
   type ConversationSession,
 } from "twilio-agent-connect";
-import { ensurePolicyInBox, saveClaimToBox } from "../../lib/box";
+import { ensureBoxStructureInBox, saveClaimToBox } from "../../lib/box";
 import { extractClaim, respondToCaller } from "../../lib/openai";
 import type { TranscriptTurn } from "../../lib/types";
 
 loadEnv({ path: [".env.local", ".env"], quiet: true });
 
-await ensurePolicyInBox();
+await ensureBoxStructureInBox();
 
 const voiceBasePath = "/voice";
 

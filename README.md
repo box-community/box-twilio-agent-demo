@@ -13,13 +13,13 @@ One Vercel project and domain (`vercel.json`): `/` and `/api/*` go to Next.js (`
 ```text
 Homeowner → Twilio → /voice/twiml ↔ /voice/ws → OpenAI interview
                                               → call ends
-                         OpenAI fact extraction → Box intake report + metadata
+                         OpenAI fact extraction → Box/Loss Reports intake report + metadata
                          Box AI (report + data/homeowners-policy.md)
                          final report version + metadata + review task
                          dashboard reads Box (refresh after a live call)
 ```
 
-Startup uploads `data/homeowners-policy.md` into `BOX_FOLDER_ID` (default `0`) and versions it when the local file changes.
+Startup creates or reuses a `Loss Reports` child folder inside `BOX_FOLDER_ID` (default `0`). The policy stays in `BOX_FOLDER_ID` and is versioned when the local file changes; claim reports are written to and read from `Loss Reports`.
 
 ## Configure
 
@@ -34,7 +34,7 @@ Both services read `.env.local`.
 
 **OpenAI** — [API key](https://platform.openai.com/api-keys). Used for spoken replies and structured FNOL extraction. `OPENAI_MODEL` defaults to `gpt-5.6`.
 
-**Box CCG** — In the [Developer Console](https://app.box.com/developers/console), create a Client Credentials Grant Platform App. Enable **Read and write all files and folders** and **Manage AI**. App Access Only is enough when files stay in the Service Account's folders; App + Enterprise Access is required to use an existing enterprise folder or assign tasks. A Box Admin must enable Box AI API access and authorize the app (reauthorize after any scope change). Set `BOX_CLIENT_ID`, `BOX_CLIENT_SECRET`, and `BOX_ENTERPRISE_ID`. Optional: `BOX_FOLDER_ID`, `BOX_REVIEWER_USER_ID`. Collaborate the Service Account on any folder it does not own. Server-side Box calls use the official [`box`](https://www.npmjs.com/package/box) package through its `box/sdk` entry point.
+**Box CCG** — In the [Developer Console](https://app.box.com/developers/console), create a Client Credentials Grant Platform App. Enable **Read and write all files and folders** and **Manage AI**. App Access Only is enough when files stay in the Service Account's folders; App + Enterprise Access is required to use an existing enterprise folder or assign tasks. A Box Admin must enable Box AI API access and authorize the app (reauthorize after any scope change). Set `BOX_CLIENT_ID`, `BOX_CLIENT_SECRET`, and `BOX_ENTERPRISE_ID`. Optional: `BOX_FOLDER_ID`, the parent in which the app maintains the policy and `Loss Reports` folder, and `BOX_REVIEWER_USER_ID`. Collaborate the Service Account on any folder it does not own. Server-side Box calls use the official [`box`](https://www.npmjs.com/package/box) package through its `box/sdk` entry point.
 
 **Twilio** — Account SID, Auth Token, API key SID + secret, and an E.164 voice number.
 

@@ -54,8 +54,9 @@ test("persists intake, asks Box AI, and writes the completed claim with SDK mana
   delete process.env.BOX_REVIEWER_USER_ID;
 
   const calls = {
-    folderQueries: [] as unknown[],
-    uploads: [] as Array<{ attributes: { name: string } }>,
+    folderQueries: [] as Array<{ folderId: string; options: unknown }>,
+    folderCreates: [] as Array<{ name: string; parent: { id: string } }>,
+    uploads: [] as Array<{ attributes: { name: string; parent: { id: string } } }>,
     versions: [] as Array<{ fileId: string; attributes: { name: string } }>,
     metadataCreates: [] as Array<Record<string, string>>,
     metadataUpdates: [] as Array<Array<{ path?: string; value?: unknown }>>,
@@ -65,8 +66,8 @@ test("persists intake, asks Box AI, and writes the completed claim with SDK mana
 
   const fakeClient = {
     folders: {
-      async getFolderItems(_folderId: string, options: unknown) {
-        calls.folderQueries.push(options);
+      async getFolderItems(folderId: string, options: unknown) {
+        calls.folderQueries.push({ folderId, options });
         if (calls.folderQueries.length === 1) return { entries: [] };
 
         const metadata = { ...calls.metadataCreates[0] };
@@ -87,9 +88,13 @@ test("persists intake, asks Box AI, and writes the completed claim with SDK mana
           ],
         };
       },
+      async createFolder(body: { name: string; parent: { id: string } }) {
+        calls.folderCreates.push(body);
+        return { id: "150", type: "folder", name: body.name };
+      },
     },
     uploads: {
-      async uploadFile(body: { attributes: { name: string } }) {
+      async uploadFile(body: { attributes: { name: string; parent: { id: string } } }) {
         calls.uploads.push(body);
         return { entries: [{ id: body.attributes.name === "homeowners-policy.md" ? "100" : "200" }] };
       },
@@ -166,6 +171,11 @@ test("persists intake, asks Box AI, and writes the completed claim with SDK mana
       calls.uploads.map((upload) => upload.attributes.name),
       ["homeowners-policy.md", `${saved.claimNumber}.md`],
     );
+    assert.deepEqual(calls.folderCreates, [{ name: "Loss Reports", parent: { id: "42" } }]);
+    assert.deepEqual(
+      calls.uploads.map((upload) => upload.attributes.parent.id),
+      ["42", "150"],
+    );
     assert.deepEqual(calls.ai[0]?.items.map((item) => item.id), ["200", "100"]);
     assert.equal(calls.ai[0]?.mode, "multiple_item_qa");
     assert.equal(calls.ai[0]?.includeCitations, true);
@@ -177,6 +187,7 @@ test("persists intake, asks Box AI, and writes the completed claim with SDK mana
     assert.equal(patch.find((operation) => operation.path === "/coverageStatus")?.value, "Likely covered");
 
     const listed = await listClaims(fakeClient);
+    assert.equal(calls.folderQueries[1]?.folderId, "150");
     assert.equal(listed[0]?.claimNumber, saved.claimNumber);
     assert.equal(listed[0]?.coverageStatus, "Likely covered");
     assert.deepEqual(await getClaimTranscript("200", fakeClient), [
